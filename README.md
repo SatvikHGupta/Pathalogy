@@ -2,7 +2,6 @@
 
 A modern and production-ready **Pathology Lab frontend application** built using **React 19 and Vite**, styled with **Tailwind CSS**, and deployed using **Docker, Nginx, Jenkins CI/CD, and GitHub Actions**.
 
-This project demonstrates **frontend engineering combined with DevOps best practices**, making it suitable for real-world production use and portfolio showcasing.
 
 ---
 
@@ -182,8 +181,3 @@ http://localhost
 * Production-ready static web application
 
 ---
-
-## 👨‍💻 Author
-
-**Suryamani Kumar**
-GitHub: [https://github.com/suryamani752](https://github.com/suryamani752)
