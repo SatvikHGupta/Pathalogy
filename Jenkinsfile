@@ -1,108 +1,155 @@
 pipeline {
-    agent none
+    agent any
 
     environment {
-        DOCKERHUB_USERNAME = "suryamani7"
-        IMAGE_NAME = "pytho"
-        SCANNER_HOME = tool 'sonar-scanner'
+        IMAGE_NAME       = 'patho'
+        CONTAINER_NAME   = 'patho-container'
+        // Notification targets - apne hisaab se badlein
+        EMAIL_RECIPIENTS = 'shg975@gmail.com'
+        // SLACK_CHANNEL    = '#devops-alerts'
     }
 
     stages {
 
-        stage("staging pipeline") {
-            when {
-                branch 'staging'
-            }
-            agent {
-                label 'staging-node'
-            }
+        // Stage 1: Source code checkout
+        stage('Checkout Code') {
             steps {
-                echo "staging branch detected! running on working stage"
-                chechout scm
-                echo "building staging image...."
-                sh "docker build -t ${DOCKERHUB_USERNAME}/${IMAGE_NAME}:staging ."
-                sh "trivy image ${DOCKERHUB_USERNAME}/${IMAGE_NAME}:staging > trivy-staging-report.txt"
+                git branch: 'main',
+                    url: 'https://github.com/SatvikHGupta/Pathalogy.git'
+            }
+        }
 
-                script {
-                    withCredentials([
-                        usernamePassword(
-                            credentialsId: 'docker-hub-creds',
-                            passwordVariable: 'DOCKER_PASS',
-                            usernameVariable: 'DOCKER_USER'
-                        )
-                    ]) {
-                        sh "echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin"
-                        sh "docker push ${DOCKERHUB_USERNAME}/${IMAGE_NAME}:staging"
-                    }
-                }
-
-                script {
-                    echo "Deploying to staging Environment..."
-                    sh "docker rm -f pytho-staging || true"
-                    sh "docker run -d -p 5000:80 --name pytho-staging ${DOCKERHUB_USERNAME}/${IMAGE_NAME}:staging"
+        // Stage 2: SCA - dependency vulnerabilities (OWASP)
+        stage('OWASP Dependency Check') {
+            steps {
+                withCredentials([string(credentialsId: 'nvd-api-key',
+                                        variable: 'NVD_API_KEY')]) {
+                    dependencyCheck(
+                        additionalArguments: '''
+                            --scan ./
+                            --disableYarnAudit
+                            --disableNodeAudit
+                            --format XML
+                            --format HTML
+                            --nvdApiKey $NVD_API_KEY
+                        ''',
+                        odcInstallation: 'DP-Check'
+                    )
                 }
             }
         }
 
-        stage("production pipeline") {
-            when {
-                branch 'main'
-            }
-            agent {
-                label 'prod-node'
-            }
+        // Stage 3: SAST - code quality (SonarQube)
+        stage('SonarQube Analysis') {
             steps {
-                echo "Main branch detected! running on worker prod...."
-                checkout scm
-
-                echo "Running owasp scan..."
-                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit',
-                                odcInstallation: 'DP-Check'
-
-                echo "running sonnarqube analysis"
                 withSonarQubeEnv('sonar-server') {
-                    // code ko scan karke report server par bhejna
-                    sh "${SCANNER_HOME}/bin/sonar-scanner -Dsonar.projectKey=pytho-prod -Dsonar.sources=."
-                }
-
-                echo "building production image"
-                sh "docker build -t ${DOCKERHUB_USERNAME}/${IMAGE_NAME}:latest ."
-                sh "docker build -t ${DOCKERHUB_USERNAME}/${IMAGE_NAME}:${BUILD_NUMBER} ."
-
-                echo "Running strict security scan...."
-                sh "trivy image ${DOCKERHUB_USERNAME}/${IMAGE_NAME}:latest > trivy-image-report.txt"
-
-                script {
-                    withCredentials([
-                        usernamePassword(
-                            credentialsId: 'docker-hub-creds',
-                            passwordVariable: 'DOCKER_PASS',
-                            usernameVariable: 'DOCKER_USER'
-                        )
-                    ]) {
-                        sh "echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin"
-                        sh "docker push ${DOCKERHUB_USERNAME}/${IMAGE_NAME}:latest"
-                        sh "docker push ${DOCKERHUB_USERNAME}/${IMAGE_NAME}:${BUILD_NUMBER}"
+                    script {
+                        def scannerHome = tool 'sonar-scanner'
+                        sh """
+                            ${scannerHome}/bin/sonar-scanner \
+                              -Dsonar.projectKey=Pathalogy \
+                              -Dsonar.projectName="Pathalogy" \
+                              -Dsonar.sources=. \
+                              -Dsonar.exclusions="**/node_modules/**,**/dist/**,**/build/**" \
+                              -Dsonar.sourceEncoding=UTF-8
+                        """
                     }
                 }
+            }
+        }
 
-                script {
-                    echo "deploying to production"
-                    sh "docker rm -f pytho-prod || true"
-                    sh "docker run -d -p 80:80 --name pytho-prod ${DOCKERHUB_USERNAME}/${IMAGE_NAME}:latest"
-                }
+        // Stage 4: Filesystem security scan (Trivy)
+        stage('Trivy Filesystem Scan') {
+            steps {
+                sh '''
+                    trivy fs . \
+                      --severity HIGH,CRITICAL \
+                      --format table \
+                      -o trivy-fs-report.txt
+                '''
+            }
+        }
+
+        // Stage 5: Build container image
+        stage('Build Docker Image') {
+            steps {
+                sh 'docker build -t ${IMAGE_NAME} .'
+            }
+        }
+
+        // Stage 6: Image security scan (Trivy)
+        stage('Trivy Docker Image Scan') {
+            steps {
+                sh '''
+                    trivy image \
+                      --severity HIGH,CRITICAL \
+                      --format table \
+                      -o trivy-image-report.txt \
+                      ${IMAGE_NAME}
+                '''
+            }
+        }
+
+        // Stage 7: Deploy the container
+        stage('Deploy Container') {
+            steps {
+                sh '''
+                    docker rm -f ${CONTAINER_NAME} || true
+                    docker run -d \
+                      -p 80:80 \
+                      --name ${CONTAINER_NAME} \
+                      ${IMAGE_NAME}
+                '''
             }
         }
     }
 
     post {
+        // Har build ke baad reports archive karo
         always {
-            // OWASP ki report graph ke roop mein dikhana
-            dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
-            // trivy report ko archive karna taaki download kar sakein
-            archiveArtifacts artifacts: '*.txt', allowEmptyArchive: true
-            sh "docker logout || true"
-            cleanWs()
+            archiveArtifacts(
+                artifacts: 'trivy-*.txt,**/dependency-check-report.*',
+                allowEmptyArchive: true
+            )
+            dependencyCheckPublisher(pattern: '**/dependency-check-report.xml')
+        }
+
+        // Build PASS - Email + Slack (success)
+        success {
+            // slackSend(
+            //     channel: env.SLACK_CHANNEL,
+            //     color: 'good',
+            //     message: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER} deployed " +
+            //              "(<${env.BUILD_URL}|open build>)"
+            // )
+            emailext(
+                to: env.EMAIL_RECIPIENTS,
+                subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                mimeType: 'text/html',
+                attachmentsPattern: 'trivy-*.txt',
+                body: "<h3>Build Successful</h3>" +
+                      "<p>Job: ${env.JOB_NAME} #${env.BUILD_NUMBER}<br/>" +
+                      "URL: <a href='${env.BUILD_URL}'>${env.BUILD_URL}</a></p>" +
+                      "<p>Trivy reports attached.</p>"
+            )
+        }
+
+        // Build FAIL - Email + Slack (failure)
+        failure {
+            // slackSend(
+            //     channel: env.SLACK_CHANNEL,
+            //     color: 'danger',
+            //     message: "FAILURE: ${env.JOB_NAME} #${env.BUILD_NUMBER} failed " +
+            //              "(<${env.BUILD_URL}console|check logs>)"
+            // )
+            emailext(
+                to: env.EMAIL_RECIPIENTS,
+                subject: "FAILURE: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                mimeType: 'text/html',
+                body: "<h3>Build Failed</h3>" +
+                      "<p>Job: ${env.JOB_NAME} #${env.BUILD_NUMBER}<br/>" +
+                      "Console: <a href='${env.BUILD_URL}console'>view logs</a></p>"
+            )
         }
     }
 }
