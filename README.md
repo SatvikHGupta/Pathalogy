@@ -82,7 +82,7 @@ This project uses a **multi-stage Docker build** for optimized production deploy
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/suryamani752/pythology.git
+git clone https://github.com/SatvikHGupta/Pathalogy.git
 cd pathology-lab
 ```
 
